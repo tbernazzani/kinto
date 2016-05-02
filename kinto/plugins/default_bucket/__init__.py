@@ -6,7 +6,6 @@ from pyramid.settings import asbool
 from pyramid.security import NO_PERMISSION_REQUIRED, Authenticated
 
 from cliquet.errors import raise_invalid
-from cliquet.events import ACTIONS
 from cliquet.utils import build_request, reapply_cors, hmac_digest
 from cliquet.storage import exceptions as storage_exceptions
 
@@ -28,11 +27,14 @@ def create_bucket(request, bucket_id):
     if bucket_id in already_created:
         return
 
-    bucket = resource_create_object(request=request,
-                                    resource_cls=Bucket,
-                                    uri='/buckets/%s' % bucket_id,
-                                    resource_name='bucket',
-                                    obj_id=bucket_id)
+    # Fake context to instantiate a Bucket resource.
+    context = RouteFactory(request)
+    context.get_permission_object_id = lambda r, i: '/buckets/%s' % bucket_id
+    resource = Bucket(request, context)
+    try:
+        bucket = resource.model.create_record({'id': bucket_id})
+    except storage_exceptions.UnicityError as e:
+        bucket = e.record
     already_created[bucket_id] = bucket
 
 
@@ -56,52 +58,36 @@ def create_collection(request, bucket_id):
     if collection_put:
         return
 
-    backup_matchdict = request.matchdict
+    # Fake context to instantiate a Collection resource.
+    context = RouteFactory(request)
+    context.get_permission_object_id = lambda r, i: collection_uri
+
+    backup = request.matchdict
     request.matchdict = dict(bucket_id=bucket_id,
                              id=collection_id,
                              **request.matchdict)
-    collection = resource_create_object(request=request,
-                                        resource_cls=Collection,
-                                        uri=collection_uri,
-                                        resource_name='collection',
-                                        obj_id=collection_id)
-    already_created[collection_uri] = collection
-    request.matchdict = backup_matchdict
-
-
-def resource_create_object(request, resource_cls, uri, resource_name, obj_id):
-    """In the default bucket, the bucket and collection are implicitly
-    created. This helper instantiate the resource and simulate a request
-    with its RootFactory on the instantiated resource.
-    :returns: the created object
-    :rtype: dict
-    """
-    # Fake context to instantiate a resource.
-    context = RouteFactory(request)
-    context.get_permission_object_id = lambda r, i: uri
-
-    resource = resource_cls(request, context)
-
-    # Check that provided id is valid for this resource.
-    if not resource.model.id_generator.match(obj_id):
+    resource = Collection(request, context)
+    if not resource.model.id_generator.match(collection_id):
         error_details = {
             'location': 'path',
-            'description': "Invalid %s id" % resource_name
+            'description': "Invalid collection_id id"
         }
-        raise_invalid(resource.request, **error_details)
-
-    data = {'id': obj_id}
+        raise_invalid(request, **error_details)
     try:
-        obj = resource.model.create_record(data)
-        # Since the current request is not a resource (but a straight Service),
-        # we simulate a request on a resource.
-        # This will be used in the resource event payload.
-        resource.request.current_resource_name = resource_name
-        resource.postprocess(data, action=ACTIONS.CREATE)
+        collection = resource.model.create_record({'id': collection_id})
     except storage_exceptions.UnicityError as e:
-        obj = e.record
-    return obj
+        collection = e.record
+    already_created[collection_uri] = collection
+    request.matchdict = backup
 
+# COMP 490 Added by Tim Bernazzani. Check to see if there is a user id list. If there is, just stop. Otherwise, create the list.
+def create_user_id_list():
+	if user_id_list
+		return user_id_list
+	else
+		user_id_list = []
+		return user_id_list
+#--------------------------------------------------------------------------------------------------------------
 
 def default_bucket(request):
     if request.method.lower() == 'options':
@@ -166,6 +152,10 @@ def get_user_info(request):
     }
     return user_info
 
+#COMP 490 Added by Tim Bernazzani. Uses the default_bucket to store the user id in the user id list.
+def store_user_info():
+	user_id_list.append(get_user_info('id'))
+#-----------------------------------------------------------------------------------------
 
 def includeme(config):
     # Redirect default to the right endpoint
@@ -189,5 +179,5 @@ def includeme(config):
         "default_bucket",
         description="The default bucket is an alias for a personal"
                     " bucket where collections are created implicitly.",
-        url="http://kinto.readthedocs.io/en/latest/api/1.x/"
+        url="http://kinto.readthedocs.org/en/latest/api/1.x/"
             "buckets.html#personal-bucket-default")
